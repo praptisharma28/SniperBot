@@ -1,7 +1,7 @@
 [package]
 name = "sniperbot"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 # HTTP client for API calls
@@ -21,8 +21,8 @@ env_logger = "0.10"
 config = "0.13"
 # Database (SQLite for storing data)
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite"] }
-# Telegram bot
-teloxide = { version = "0.12", features = ["macros"] }
+# Telegram bot - FIXED: Added command macros feature
+teloxide = { version = "0.12", features = ["macros", "ctrlc_handler"] }
 # Time handling
 chrono = { version = "0.4", features = ["serde"] }
 # Big numbers for crypto calculations
@@ -33,3 +33,5 @@ tokio-tungstenite = "0.20"
 governor = "0.6"
 # Base64 encoding
 base64 = "0.21"
+# Add dptree for teloxide dependencies
+dptree = "0.3"

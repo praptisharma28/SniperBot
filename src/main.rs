@@ -56,8 +56,11 @@ async fn main() -> Result<()> {
     // Start whale tracking
     // handles.push(tokio::spawn(start_whale_tracker(app_state.clone())));
 
-    // Start Telegram bot
-    handles.push(tokio::spawn(start_telegram_bot(app_state.clone())));
+    // Start Telegram bot - FIXED: Clone state before passing
+    let telegram_state = app_state.clone();
+    handles.push(tokio::spawn(async move {
+        start_telegram_bot(telegram_state).await
+    }));
 
     info!("🔥 All services started! Bot is now running...");
 
@@ -86,6 +89,7 @@ async fn start_dex_screener_scanner(state: Arc<AppState>) -> Result<()> {
     scanner.start_scanning(state).await
 }
 
+// FIXED: Pass by reference instead of moving
 async fn start_telegram_bot(state: Arc<AppState>) -> Result<()> {
     state.telegram.start(state).await
 }
