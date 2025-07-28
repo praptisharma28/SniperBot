@@ -5,6 +5,7 @@
 // Lets good people in (saves quality tokens to database)
 // Calls the bouncer (triggers analysis for suspicious activity)
 
+// src/scanners/dex_screener.rs
 use anyhow::Result;
 use chrono::Utc;
 use log::{info, warn, error};
@@ -281,11 +282,6 @@ struct PriceChange {
 
 // This function will analyze tokens and generate signals
 async fn analyze_and_signal(state: Arc<AppState>, token: Token) -> Result<()> {
-    // We'll implement the full analysis logic next
-    // For now, just log that we're analyzing
-    info!("🧠 Analyzing token: {} ({})", token.symbol, token.name);
-    
-    // TODO: Implement full analysis using our analyzers module
-    
-    Ok(())
+    // Use our token analyzer
+    crate::analyzers::token_analyzer::analyze_token(state, token).await
 }
