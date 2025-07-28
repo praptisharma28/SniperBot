@@ -6,6 +6,7 @@ use teloxide::{
     prelude::*,
     types::{ParseMode, ChatId},
     Bot,
+    utils::command::BotCommands, // FIXED: Added this import
 };
 use tokio::time::{sleep, Duration};
 
@@ -47,10 +48,11 @@ impl TelegramBot {
         // Send startup message
         self.send_startup_message(chat_id).await?;
 
-        // Start the main loop for processing signals
+        // FIXED: Clone state before moving into async block
+        let state_for_signals = state.clone();
         let bot_clone = self.bot.clone();
         let signal_processor = tokio::spawn(async move {
-            process_trading_signals(bot_clone, chat_id, state.clone()).await
+            process_trading_signals(bot_clone, chat_id, state_for_signals).await
         });
 
         // Start command handler
@@ -81,7 +83,7 @@ impl TelegramBot {
 
         self.bot
             .send_message(chat_id, message)
-            .parse_mode(ParseMode::Markdown)
+            .parse_mode(ParseMode::MarkdownV2) // FIXED: Use MarkdownV2 instead of deprecated Markdown
             .await?;
 
         Ok(())
@@ -147,7 +149,7 @@ async fn send_trading_signal(bot: &Bot, chat_id: ChatId, signal: &TradingSignal,
 
     // Send the message
     bot.send_message(chat_id, message)
-        .parse_mode(ParseMode::Markdown)
+        .parse_mode(ParseMode::MarkdownV2) // FIXED: Use MarkdownV2
         .await?;
 
     info!("📤 Sent {} signal for {}", 
@@ -301,6 +303,7 @@ enum Command {
 async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppState>) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
+    // FIXED: Return String for all branches to avoid type mismatch
     let response = match cmd {
         Command::Help => {
             "🤖 *Crypto Sniper Bot Commands:*\n\n\
@@ -310,10 +313,10 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
              /trades - Active simulated trades\n\
              /balance - Current simulated balance\n\
              /help - Show this help message\n\n\
-             🔥 The bot automatically scans for tokens and sends signals!"
+             🔥 The bot automatically scans for tokens and sends signals!".to_string()
         }
         Command::Status => {
-            let stats = match state.db.get_trading_stats().await {
+            match state.db.get_trading_stats().await {
                 Ok(stats) => format!(
                     "✅ *Bot Status: ACTIVE*\n\n\
                      📊 **Performance:**\n\
@@ -331,13 +334,12 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
                     stats.avg_multiplier
                 ),
                 Err(_) => "✅ *Bot Status: ACTIVE*\n\n📊 Stats loading...".to_string(),
-            };
-            &stats
+            }
         }
         Command::Stats => {
             match state.db.get_trading_stats().await {
                 Ok(stats) => {
-                    let response = format!(
+                    format!(
                         "📊 *Trading Statistics*\n\n\
                          📈 **Overall Performance:**\n\
                          🎯 Total Trades: {}\n\
@@ -358,8 +360,7 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
                         stats.total_profit_usd,
                         stats.avg_multiplier,
                         stats.avg_multiplier * 5.0 // Estimate best trade
-                    );
-                    response
+                    )
                 }
                 Err(e) => {
                     error!("Failed to get trading stats: {}", e);
@@ -453,7 +454,7 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
     };
 
     bot.send_message(chat_id, response)
-        .parse_mode(ParseMode::Markdown)
+        .parse_mode(ParseMode::MarkdownV2) // FIXED: Use MarkdownV2
         .await?;
 
     Ok(())
