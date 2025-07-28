@@ -4,11 +4,11 @@ use log::{info, error};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-mod config; //settings yo
+mod config;
 mod models;
-mod scanners; // to watch different sites
-mod analyzers; // to see token good or bad
-mod database; //to remember
+mod scanners;
+mod analyzers;
+mod database;
 mod telegram;
 mod strategies;
 mod utils;
