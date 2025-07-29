@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::{SqlitePool, Row};
 use log::{info, error};
+use std::path::Path;
 
 use crate::models::{Token, TokenMetrics, TradingSignal, SimulatedTrade, WhaleWallet, WhaleTransaction};
 
@@ -12,6 +13,18 @@ pub struct Database {
 impl Database {
     pub async fn new(database_url: &str) -> Result<Self> {
         info!("Connecting to database: {}", database_url);
+        
+        // Extract the file path from the database URL
+        if let Some(file_path) = database_url.strip_prefix("sqlite:") {
+            // Create the directory if it doesn't exist
+            if let Some(parent) = Path::new(file_path).parent() {
+                if !parent.exists() {
+                    std::fs::create_dir_all(parent)?;
+                    info!("Created database directory: {:?}", parent);
+                }
+            }
+        }
+        
         let pool = SqlitePool::connect(database_url).await?;
         Ok(Database { pool })
     }

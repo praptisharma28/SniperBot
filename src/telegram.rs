@@ -6,7 +6,8 @@ use teloxide::{
     prelude::*,
     types::{ParseMode, ChatId},
     Bot,
-    utils::command::BotCommands, // FIXED: Added this import
+    utils::command::BotCommands,
+    dispatching::{dialogue::InMemStorage, UpdateHandler},
 };
 use tokio::time::{sleep, Duration};
 
@@ -15,7 +16,6 @@ use crate::AppState;
 
 pub struct TelegramBot {
     bot: Bot,
-    chat_id: ChatId,
 }
 
 impl TelegramBot {
@@ -33,57 +33,65 @@ impl TelegramBot {
             }
         }
 
-        Ok(Self {
-            bot,
-            chat_id: ChatId(0), // Will be set from config
-        })
+        Ok(Self { bot })
     }
 
     pub async fn start(&self, state: Arc<AppState>) -> Result<()> {
         info!("🤖 Starting Telegram bot service...");
 
-        // Set the chat ID from config
+        // Get chat ID from config
         let chat_id = ChatId(state.config.telegram_chat_id);
 
         // Send startup message
         self.send_startup_message(chat_id).await?;
 
-        // FIXED: Clone state before moving into async block
+        // Start signal processor in background
         let state_for_signals = state.clone();
-        let bot_clone = self.bot.clone();
-        let signal_processor = tokio::spawn(async move {
-            process_trading_signals(bot_clone, chat_id, state_for_signals).await
+        let bot_for_signals = self.bot.clone();
+        tokio::spawn(async move {
+            if let Err(e) = process_trading_signals(bot_for_signals, chat_id, state_for_signals).await {
+                error!("Signal processor error: {}", e);
+            }
         });
 
-        // Start command handler
-        let bot_clone = self.bot.clone();
-        let state_clone = state.clone();
-        let command_handler = tokio::spawn(async move {
-            handle_commands(bot_clone, state_clone).await
-        });
+        // Create the command handler
+        let handler = Update::filter_message()
+            .filter_command::<Command>()
+            .endpoint(answer_command);
 
-        // Wait for both tasks
-        tokio::try_join!(signal_processor, command_handler)?;
+        // Start the dispatcher
+        Dispatcher::builder(self.bot.clone(), handler)
+            .dependencies(dptree::deps![state])
+            .default_handler(|upd| async move {
+                log::debug!("Unhandled update: {:?}", upd);
+            })
+            .error_handler(LoggingErrorHandler::with_custom_text(
+                "An error has occurred in the dispatcher",
+            ))
+            .enable_ctrlc_handler()
+            .build()
+            .dispatch()
+            .await;
 
         Ok(())
     }
 
     async fn send_startup_message(&self, chat_id: ChatId) -> Result<()> {
         let message = format!(
-            "🚀 *Crypto Sniper Bot Started!*\n\n\
+            "🚀 *Crypto Sniper Bot Started\\!*\n\n\
              ✅ All scanners active\n\
              ✅ Analysis engine ready\n\
              ✅ Database connected\n\n\
              🔍 Monitoring:\n\
              • DEX Screener\n\
-             • Pump.fun (coming soon)\n\
-             • Whale movements (coming soon)\n\n\
+             • Pump\\.fun \\(coming soon\\)\n\
+             • Whale movements \\(coming soon\\)\n\n\
              Use /help for commands"
         );
 
         self.bot
             .send_message(chat_id, message)
-            .parse_mode(ParseMode::MarkdownV2) // FIXED: Use MarkdownV2 instead of deprecated Markdown
+            .parse_mode(ParseMode::MarkdownV2)
             .await?;
 
         Ok(())
@@ -121,7 +129,7 @@ async fn process_trading_signals(bot: Bot, chat_id: ChatId, state: Arc<AppState>
             break;
         }
 
-        sleep(Duration::from_secs(5)).await; // Check every 5 seconds
+        sleep(Duration::from_secs(5)).await;
     }
 
     Ok(())
@@ -147,9 +155,9 @@ async fn send_trading_signal(bot: &Bot, chat_id: ChatId, signal: &TradingSignal,
         SignalType::WhaleMovement => format_whale_signal(&token, signal, &metrics),
     };
 
-    // Send the message
-    bot.send_message(chat_id, message)
-        .parse_mode(ParseMode::MarkdownV2) // FIXED: Use MarkdownV2
+    // Send the message with proper escaping for MarkdownV2
+    bot.send_message(chat_id, escape_markdown_v2(&message))
+        .parse_mode(ParseMode::MarkdownV2)
         .await?;
 
     info!("📤 Sent {} signal for {}", 
@@ -159,14 +167,26 @@ async fn send_trading_signal(bot: &Bot, chat_id: ChatId, signal: &TradingSignal,
     Ok(())
 }
 
+// Helper function to escape MarkdownV2 special characters
+fn escape_markdown_v2(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '_' | '*' | '[' | ']' | '(' | ')' | '~' | '`' | '>' | '#' | '+' | '-' | '=' | '|' | '{' | '}' | '.' | '!' => {
+                format!("\\{}", c)
+            }
+            _ => c.to_string(),
+        })
+        .collect()
+}
+
 fn format_buy_signal(token: &crate::models::Token, signal: &TradingSignal, metrics: &Option<crate::models::TokenMetrics>) -> String {
     let mut message = format!(
-        "🚀 *BUY SIGNAL DETECTED!*\n\n\
-         💎 **{}** ({})\n\
-         🔗 `{}`\n\
+        "🚀 BUY SIGNAL DETECTED!\n\n\
+         💎 {} ({})\n\
+         🔗 {}\n\
          ⛓️ Chain: {}\n\
          📍 Source: {}\n\n\
-         📊 **Analysis:**\n\
+         📊 Analysis:\n\
          🎯 Confidence: {:.1}%\n",
         token.name,
         token.symbol,
@@ -181,7 +201,7 @@ fn format_buy_signal(token: &crate::models::Token, signal: &TradingSignal, metri
     }
 
     if let Some(metrics) = metrics {
-        message.push_str("\n💰 **Market Data:**\n");
+        message.push_str("\n💰 Market Data:\n");
         
         if let Some(price) = metrics.price_usd {
             message.push_str(&format!("💵 Price: ${}\n", price));
@@ -200,21 +220,20 @@ fn format_buy_signal(token: &crate::models::Token, signal: &TradingSignal, metri
         }
     }
 
-    message.push_str(&format!("\n🧠 **Reason:**\n{}\n", signal.reason));
+    message.push_str(&format!("\n🧠 Reason:\n{}\n", signal.reason));
     message.push_str(&format!("\n⏰ Detected: {}", signal.created_at.format("%H:%M:%S UTC")));
     
-    // Add quick action buttons (we'll implement these as commands)
-    message.push_str("\n\n🎮 **Quick Actions:**\n/details - Get full analysis\n/track - Add to watchlist");
+    message.push_str("\n\n🎮 Quick Actions:\n/details - Get full analysis\n/track - Add to watchlist");
 
     message
 }
 
 fn format_sell_signal(token: &crate::models::Token, signal: &TradingSignal, _metrics: &Option<crate::models::TokenMetrics>) -> String {
     format!(
-        "💸 *SELL SIGNAL*\n\n\
-         📉 **{}** ({})\n\
-         🔗 `{}`\n\n\
-         ⚠️ **Reason:**\n{}\n\n\
+        "💸 SELL SIGNAL\n\n\
+         📉 {} ({})\n\
+         🔗 {}\n\n\
+         ⚠️ Reason:\n{}\n\n\
          📊 Confidence: {:.1}%\n\
          ⏰ {}", 
         token.name,
@@ -228,10 +247,10 @@ fn format_sell_signal(token: &crate::models::Token, signal: &TradingSignal, _met
 
 fn format_warning_signal(token: &crate::models::Token, signal: &TradingSignal, _metrics: &Option<crate::models::TokenMetrics>) -> String {
     format!(
-        "⚠️ *WARNING ALERT*\n\n\
-         🚨 **{}** ({})\n\
-         🔗 `{}`\n\n\
-         ❗ **Alert:**\n{}\n\n\
+        "⚠️ WARNING ALERT\n\n\
+         🚨 {} ({})\n\
+         🔗 {}\n\n\
+         ❗ Alert:\n{}\n\n\
          📊 Confidence: {:.1}%\n\
          ⏰ {}", 
         token.name,
@@ -245,10 +264,10 @@ fn format_warning_signal(token: &crate::models::Token, signal: &TradingSignal, _
 
 fn format_whale_signal(token: &crate::models::Token, signal: &TradingSignal, _metrics: &Option<crate::models::TokenMetrics>) -> String {
     format!(
-        "🐋 *WHALE MOVEMENT DETECTED*\n\n\
-         💎 **{}** ({})\n\
-         🔗 `{}`\n\n\
-         🔍 **Movement:**\n{}\n\n\
+        "🐋 WHALE MOVEMENT DETECTED\n\n\
+         💎 {} ({})\n\
+         🔗 {}\n\n\
+         🔍 Movement:\n{}\n\n\
          📊 Confidence: {:.1}%\n\
          ⏰ {}", 
         token.name,
@@ -258,29 +277,6 @@ fn format_whale_signal(token: &crate::models::Token, signal: &TradingSignal, _me
         signal.confidence * rust_decimal::Decimal::from(100),
         signal.created_at.format("%H:%M:%S UTC")
     )
-}
-
-async fn handle_commands(bot: Bot, state: Arc<AppState>) -> Result<()> {
-    info!("🎮 Starting command handler...");
-
-    let handler = Update::filter_message()
-        .filter_command::<Command>()
-        .endpoint(answer_command);
-
-    Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![state])
-        .default_handler(|upd| async move {
-            warn!("Unhandled update: {:?}", upd);
-        })
-        .error_handler(LoggingErrorHandler::with_custom_text(
-            "An error has occurred in the dispatcher",
-        ))
-        .enable_ctrlc_handler()
-        .build()
-        .dispatch()
-        .await;
-
-    Ok(())
 }
 
 #[derive(BotCommands, Clone)]
@@ -298,15 +294,23 @@ enum Command {
     Trades,
     #[command(description = "Show wallet balance (simulated)")]
     Balance,
+    #[command(description = "Start the bot")]
+    Start,
 }
 
 async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppState>) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
-    // FIXED: Return String for all branches to avoid type mismatch
     let response = match cmd {
+        Command::Start => {
+            "🤖 Welcome to Crypto Sniper Bot!\n\n\
+             🚀 I automatically scan for profitable crypto tokens and send you trading signals.\n\n\
+             Use /help to see all available commands.\n\n\
+             🔥 The bot is now monitoring the markets for you!".to_string()
+        }
         Command::Help => {
-            "🤖 *Crypto Sniper Bot Commands:*\n\n\
+            "🤖 Crypto Sniper Bot Commands:\n\n\
+             /start - Welcome message\n\
              /status - Bot status and health\n\
              /stats - Trading performance stats\n\
              /recent - Recently discovered tokens\n\
@@ -318,13 +322,13 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
         Command::Status => {
             match state.db.get_trading_stats().await {
                 Ok(stats) => format!(
-                    "✅ *Bot Status: ACTIVE*\n\n\
-                     📊 **Performance:**\n\
+                    "✅ Bot Status: ACTIVE\n\n\
+                     📊 Performance:\n\
                      📈 Total Trades: {}\n\
                      🎯 Win Rate: {:.1}%\n\
                      💰 Total P&L: ${:.2}\n\
                      📏 Avg Multiplier: {:.2}x\n\n\
-                     🔍 **Scanners:**\n\
+                     🔍 Scanners:\n\
                      ✅ DEX Screener\n\
                      🔄 Pump.fun (coming soon)\n\
                      🔄 Whale Tracker (coming soon)",
@@ -333,24 +337,24 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
                     stats.total_profit_usd,
                     stats.avg_multiplier
                 ),
-                Err(_) => "✅ *Bot Status: ACTIVE*\n\n📊 Stats loading...".to_string(),
+                Err(_) => "✅ Bot Status: ACTIVE\n\n📊 Stats loading...".to_string(),
             }
         }
         Command::Stats => {
             match state.db.get_trading_stats().await {
                 Ok(stats) => {
                     format!(
-                        "📊 *Trading Statistics*\n\n\
-                         📈 **Overall Performance:**\n\
+                        "📊 Trading Statistics\n\n\
+                         📈 Overall Performance:\n\
                          🎯 Total Trades: {}\n\
                          ✅ Profitable: {}\n\
                          ❌ Losses: {}\n\
                          🎯 Win Rate: {:.1}%\n\n\
-                         💰 **Financial:**\n\
+                         💰 Financial:\n\
                          💵 Total P&L: ${:.2}\n\
                          📏 Average Multiplier: {:.2}x\n\
                          💎 Best Trade: {}x (estimated)\n\n\
-                         ⏰ **Timing:**\n\
+                         ⏰ Timing:\n\
                          🕐 Avg Hold Time: ~2.5 hours\n\
                          ⚡ Fastest Win: ~15 minutes",
                         stats.total_trades,
@@ -359,7 +363,7 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
                         stats.win_rate,
                         stats.total_profit_usd,
                         stats.avg_multiplier,
-                        stats.avg_multiplier * 5.0 // Estimate best trade
+                        stats.avg_multiplier * 5.0
                     )
                 }
                 Err(e) => {
@@ -374,10 +378,10 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
                     if tokens.is_empty() {
                         "📭 No recent tokens found".to_string()
                     } else {
-                        let mut response = "🆕 *Recent Tokens:*\n\n".to_string();
+                        let mut response = "🆕 Recent Tokens:\n\n".to_string();
                         for (i, token) in tokens.iter().enumerate() {
                             response.push_str(&format!(
-                                "{}. **{}** ({})\n   🔗 `{}`\n   📍 {} • ⏰ {}\n\n",
+                                "{}. {} ({})\n   🔗 {}\n   📍 {} • ⏰ {}\n\n",
                                 i + 1,
                                 token.name,
                                 token.symbol,
@@ -401,11 +405,11 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
                     if trades.is_empty() {
                         "📭 No active trades".to_string()
                     } else {
-                        let mut response = "📈 *Active Trades:*\n\n".to_string();
+                        let mut response = "📈 Active Trades:\n\n".to_string();
                         for (i, trade) in trades.iter().enumerate() {
                             if let Some(token) = state.db.get_token(&trade.token_address).await.unwrap_or(None) {
                                 response.push_str(&format!(
-                                    "{}. **{}**\n   💵 Entry: ${}\n   💰 Investment: ${}\n   ⏰ {}\n\n",
+                                    "{}. {}\n   💵 Entry: ${}\n   💰 Investment: ${}\n   ⏰ {}\n\n",
                                     i + 1,
                                     token.symbol,
                                     trade.entry_price,
@@ -426,22 +430,22 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
         Command::Balance => {
             match state.db.get_trading_stats().await {
                 Ok(stats) => {
-                    let starting_balance = 1000.0; // Simulated starting balance
+                    let starting_balance = 1000.0;
                     let current_balance = starting_balance + stats.total_profit_usd;
                     
                     format!(
-                        "💰 *Simulated Balance*\n\n\
-                         💵 **Current Balance:** ${:.2}\n\
-                         📊 **Starting Balance:** ${:.2}\n\
-                         📈 **Total P&L:** ${:.2}\n\
-                         📏 **ROI:** {:.1}%\n\n\
-                         ⚡ **Active Trades:** ${:.2} invested\n\
-                         💎 **Available:** ${:.2}",
+                        "💰 Simulated Balance\n\n\
+                         💵 Current Balance: ${:.2}\n\
+                         📊 Starting Balance: ${:.2}\n\
+                         📈 Total P&L: ${:.2}\n\
+                         📏 ROI: {:.1}%\n\n\
+                         ⚡ Active Trades: ${:.2} invested\n\
+                         💎 Available: ${:.2}",
                         current_balance,
                         starting_balance,
                         stats.total_profit_usd,
                         (stats.total_profit_usd / starting_balance) * 100.0,
-                        stats.total_trades as f64 * 100.0, // Estimate active investment
+                        stats.total_trades as f64 * 100.0,
                         current_balance - (stats.total_trades as f64 * 100.0)
                     )
                 }
@@ -453,8 +457,8 @@ async fn answer_command(bot: Bot, msg: Message, cmd: Command, state: Arc<AppStat
         }
     };
 
-    bot.send_message(chat_id, response)
-        .parse_mode(ParseMode::MarkdownV2) // FIXED: Use MarkdownV2
+    bot.send_message(chat_id, escape_markdown_v2(&response))
+        .parse_mode(ParseMode::MarkdownV2)
         .await?;
 
     Ok(())

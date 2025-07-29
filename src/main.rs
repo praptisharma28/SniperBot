@@ -19,6 +19,9 @@ use telegram::TelegramBot;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load environment variables from .env file
+    dotenv::dotenv().ok();
+    
     // Initialize logging
     env_logger::init();
     info!("🚀 Starting Crypto Research Bot");
@@ -56,7 +59,7 @@ async fn main() -> Result<()> {
     // Start whale tracking
     // handles.push(tokio::spawn(start_whale_tracker(app_state.clone())));
 
-    // Start Telegram bot - FIXED: Clone state before passing
+    // Start Telegram bot - FIXED: Clone state before passing to avoid move
     let telegram_state = app_state.clone();
     handles.push(tokio::spawn(async move {
         start_telegram_bot(telegram_state).await
@@ -89,7 +92,7 @@ async fn start_dex_screener_scanner(state: Arc<AppState>) -> Result<()> {
     scanner.start_scanning(state).await
 }
 
-// FIXED: Pass by reference instead of moving
+// FIXED: Accept Arc<AppState> by value and clone it for the telegram start method
 async fn start_telegram_bot(state: Arc<AppState>) -> Result<()> {
-    state.telegram.start(state).await
+    state.telegram.start(state.clone()).await
 }

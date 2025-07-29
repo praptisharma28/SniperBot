@@ -35,3 +35,4 @@ governor = "0.6"
 base64 = "0.21"
 # Add dptree for teloxide dependencies
 dptree = "0.3"
+dotenv = "0.15.0"
